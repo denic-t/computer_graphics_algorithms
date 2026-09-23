@@ -1,0 +1,13 @@
+[project]
+name = "sphere-luminance"
+version = "1.0.0"
+description = "ЛР №2 АКГ: расчёт яркости на сфере от точечных источников света (модель Блинн-Фонга)"
+requires-python = ">=3.10"
+dependencies = ["numpy", "matplotlib", "pillow"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

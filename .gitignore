@@ -9,3 +9,9 @@ output/
 
 # Настройки редактора
 .vscode/
+
+# Локальные файлы сессий Claude Code и планы — только на локальной машине
+tmp/
+.claude/
+CLAUDE.local.md
+.pytest_cache/
