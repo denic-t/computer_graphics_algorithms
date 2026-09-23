@@ -11,13 +11,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .geometry import intersect_sphere, project_to_screen
+from .geometry import Camera, intersect_sphere
 from .models import SceneParameters
 from .physics import LuminanceCalculator, LuminanceField
 
-# Контрольные точки задаются смещениями от проекции центра сферы на экран в
-# долях видимого радиуса. Доля 0.5 гарантирует попадание на сферу при любом
-# положении сферы внутри пирамиды видимости.
+# Контрольные лучи получаются поворотом луча на центр сферы в сторону осей
+# экрана (+x, -y) на заданную долю углового радиуса сферы. Доля 0.5 гарантирует
+# попадание на сферу при любом её положении и любом направлении взгляда.
 PROBE_OFFSETS: tuple[tuple[str, float, float], ...] = (
     ("Центр диска", 0.0, 0.0),
     ("Смещение +x", 0.5, 0.0),
@@ -124,44 +124,53 @@ class FieldAnalyzer:
         Returns:
             Сечения вдоль оси X (столбец) и вдоль оси Y (строка).
         """
-        center_x, center_y = project_to_screen(
-            self._parameters, np.asarray(self._parameters.sphere_center_mm)
-        )
-        row = int(np.argmin(np.abs(field.x_coordinates_mm - center_x)))
+        camera = Camera.from_parameters(self._parameters)
+        center_x, center_y = camera.project(np.asarray(self._parameters.sphere_center_mm))
+        row =int(np.argmin(np.abs(field.x_coordinates_mm - center_x)))
         column = int(np.argmin(np.abs(field.y_coordinates_mm - center_y)))
         masked = np.where(field.sphere_mask, field.values_w_m2_sr, np.nan)
 
         return (
-            CrossSection("Вдоль X (y = const)", field.x_coordinates_mm, masked[:, column]),
-            CrossSection("Вдоль Y (x = const)", field.y_coordinates_mm, masked[row, :]),
+            CrossSection("Вдоль X", field.x_coordinates_mm, masked[:, column]),
+            CrossSection("Вдоль Y", field.y_coordinates_mm, masked[row, :]),
         )
 
     def _probes(self) -> tuple[SurfacePoint, ...]:
         """Рассчитывает яркость в трёх контрольных точках сферы.
 
-        Видимый радиус сферы на экране оценивается как R * zO / (zO - zC).
+        Из наблюдателя сфера видна внутри конуса с осью c = (C - O)/|C - O| и
+        половинным углом alpha = arcsin(R / |C - O|). Контрольный луч получается
+        поворотом c на угол beta = доля * alpha в сторону заданной оси экрана:
+        d = c * cos(beta) + u * sin(beta), где u — единичная составляющая оси
+        экрана, перпендикулярная c.
 
         Returns:
             Контрольные точки с точными (не растровыми) значениями яркости.
         """
         parameters = self._parameters
-        center_x, center_y = project_to_screen(parameters, np.asarray(parameters.sphere_center_mm))
-        apparent_radius = (
-            parameters.sphere_radius_mm
-            * parameters.observer_z_mm
-            / (parameters.observer_z_mm - parameters.sphere_z_mm)
-        )
+        camera = Camera.from_parameters(parameters)
+        to_center = np.asarray(parameters.sphere_center_mm) - camera.origin_mm
+        center_distance = float(np.linalg.norm(to_center))
+        center_direction = to_center / center_distance
+        angular_radius = float(np.arcsin(parameters.sphere_radius_mm / center_distance))
 
         probes = []
         for title, x_fraction, y_fraction in PROBE_OFFSETS:
-            screen_x = center_x + x_fraction * apparent_radius
-            screen_y = center_y + y_fraction * apparent_radius
-            surface = intersect_sphere(parameters, np.array([screen_x]), np.array([screen_y]))
+            direction = center_direction
+            shift = x_fraction * camera.screen_x + y_fraction * camera.screen_y
+            tangent = shift - (shift @ center_direction) * center_direction
+            if np.linalg.norm(tangent) > 0.0:
+                angle = angular_radius * float(np.hypot(x_fraction, y_fraction))
+                direction = center_direction * np.cos(angle) + tangent / np.linalg.norm(
+                    tangent
+                ) * np.sin(angle)
+
+            surface = intersect_sphere(parameters, direction[np.newaxis, :])
             luminance = self._calculator.luminance(surface.points_mm, surface.normals)
             probes.append(
                 SurfacePoint(
                     title=title,
-                    screen_mm=(screen_x, screen_y),
+                    screen_mm=camera.project(surface.points_mm[0]),
                     point_mm=tuple(float(value) for value in surface.points_mm[0]),
                     luminance_w_m2_sr=float(luminance[0]),
                 )

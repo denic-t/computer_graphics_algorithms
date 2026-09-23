@@ -59,6 +59,7 @@ def window(shared: tuple[ui.ApplicationWindow, DialogRecorder]) -> ui.Applicatio
     """Окно в исходном состоянии: значения по умолчанию, автопересчёт, серая палитра."""
     application, recorder = shared
     application._auto_recalculate.set(True)
+    application._square_pixel_sync.set(True)
     application._colormap.set(ui.DISPLAY_COLORMAPS[0])
     application.reset_parameters()
     settle(application, 50)
@@ -142,6 +143,7 @@ def test_invalid_input_goes_to_status_bar_only(
 def test_manual_recalculation_reports_error_dialog(
     window: ui.ApplicationWindow, dialogs: DialogRecorder
 ) -> None:
+    window._square_pixel_sync.set(False)
     type_into(entry(window._scene_form, "Разрешение Wres"), "500")
     button(window, "Рассчитать (Enter)").invoke()
     assert len(dialogs.errors) == 1
@@ -150,12 +152,12 @@ def test_manual_recalculation_reports_error_dialog(
 
 def test_enter_key_recalculates(window: ui.ApplicationWindow) -> None:
     field = entry(window._scene_form, "Радиус сферы R")
-    type_into(field, "250")
+    type_into(field, "200")
     field.focus_force()
     window.update()
     field.event_generate("<Return>")
     window.update()
-    assert window._result.parameters.sphere_radius_mm == 250.0
+    assert window._result.parameters.sphere_radius_mm == 200.0
 
 
 def test_lights_can_be_added_until_limit_and_removed(window: ui.ApplicationWindow) -> None:
@@ -222,3 +224,63 @@ def test_reset_restores_defaults(window: ui.ApplicationWindow) -> None:
     button(window, "Значения по умолчанию").invoke()
     assert window._result.parameters == SceneParameters.default()
     assert entry(window._material_form, "Блеск ke").get() == "80"
+
+
+def type_by_digits(field: ttk.Entry, text: str) -> None:
+    """Набор значения по одной цифре, как с клавиатуры."""
+    field.delete(0, tk.END)
+    for character in text:
+        field.insert(tk.END, character)
+
+
+def scene_text(window: ui.ApplicationWindow, label: str) -> str:
+    return entry(window._scene_form, label).get()
+
+
+def test_screen_size_edit_keeps_square_pixel(window: ui.ApplicationWindow) -> None:
+    type_by_digits(entry(window._scene_form, "Высота экрана H"), "1200")
+    assert scene_text(window, "Ширина экрана W") == "1200"
+    settle(window)
+    assert window._result.parameters.width_mm == 1200.0
+
+
+def test_resolution_edit_keeps_square_pixel_without_drift(window: ui.ApplicationWindow) -> None:
+    """Сначала экран 1500 x 1000 (подгонка выключена), затем Hres набирается по цифрам."""
+    window._square_pixel_sync.set(False)
+    type_into(entry(window._scene_form, "Ширина экрана W"), "1000")
+    type_into(entry(window._scene_form, "Разрешение Wres"), "400")
+    window._square_pixel_sync.set(True)
+
+    type_by_digits(entry(window._scene_form, "Разрешение Hres"), "300")
+    assert scene_text(window, "Разрешение Wres") == "200"
+    assert scene_text(window, "Ширина экрана W") == "1000"
+
+    type_by_digits(entry(window._scene_form, "Разрешение Hres"), "301")
+    assert scene_text(window, "Разрешение Wres") == "201"
+    assert float(scene_text(window, "Ширина экрана W")) == pytest.approx(201 * 1500 / 301, rel=1e-5)
+    settle(window)
+    assert window._status.get().startswith("Расчёт выполнен")
+
+
+def test_view_angles_are_editable(window: ui.ApplicationWindow) -> None:
+    type_into(entry(window._scene_form, "Наклон взгляда"), "8")
+    type_into(entry(window._scene_form, "Азимут взгляда"), "90")
+    settle(window)
+    parameters = window._result.parameters
+    assert (parameters.view_tilt_deg, parameters.view_azimuth_deg) == (8.0, 90.0)
+    assert window._result.statistics.probes[0].screen_mm[1] < -300.0
+
+
+def test_view_tilt_out_of_frame_reports_status(window: ui.ApplicationWindow) -> None:
+    type_into(entry(window._scene_form, "Наклон взгляда"), "30")
+    settle(window)
+    assert "область видимости" in window._status.get()
+
+
+def test_light_axis_columns_are_editable(window: ui.ApplicationWindow) -> None:
+    first_row = window._lights_panel._rows[0]
+    first_row._variables["axis_tilt_deg"].set("0")
+    first_row._variables["axis_azimuth_deg"].set("0")
+    settle(window)
+    light = window._result.parameters.lights[0]
+    assert (light.axis_tilt_deg, light.axis_azimuth_deg) == (0.0, 0.0)

@@ -4,14 +4,19 @@
 сценария расчёта. Физические формулы находятся в модулях geometry и physics.
 
 Окно состоит из:
-    * левой панели: параметры сцены, свойства материала, список источников
-      света (добавление, удаление, включение/выключение) и кнопки управления;
+    * левой панели: параметры сцены (в том числе поворот взгляда), свойства
+      материала, список источников света с направлением их осей (добавление,
+      удаление, включение/выключение) и кнопки управления;
     * области визуализации: изображение распределения яркости и сечения;
     * панели числовых результатов, требуемых в отчёте, и строки состояния.
 
 При включённом автопересчёте изображение обновляется вскоре после каждого
 изменения параметров; ошибки ввода в этом режиме выводятся в строку
 состояния, а не всплывающим окном, чтобы не мешать набору значения.
+
+При включённой подгонке квадратного пикселя изменение H пересчитывает W,
+изменение Hres — Wres (и наоборот). Чтобы изменить соотношение сторон
+экрана, подгонку временно отключают флажком.
 """
 
 from __future__ import annotations
@@ -28,10 +33,12 @@ from matplotlib.figure import Figure
 
 from .models import (
     MAXIMUM_LIGHT_COUNT,
+    SQUARE_PIXEL_FIELDS,
     BlinnPhongMaterial,
     LightSource,
     ParameterValidationError,
     SceneParameters,
+    square_pixel_update,
 )
 from .service import ComputationResult, LuminanceService
 
@@ -74,7 +81,9 @@ SCENE_FIELDS: tuple[FieldSpecification, ...] = (
     FieldSpecification("width_mm", "Ширина экрана W", "100…10000 мм"),
     FieldSpecification("height_px", "Разрешение Hres", "200…800 пикс", is_integer=True),
     FieldSpecification("width_px", "Разрешение Wres", "200…800 пикс", is_integer=True),
-    FieldSpecification("observer_z_mm", "Наблюдатель zO", "> zC + R, мм"),
+    FieldSpecification("observer_z_mm", "Наблюдатель zO", "100…100000 мм"),
+    FieldSpecification("view_tilt_deg", "Наклон взгляда", "0…89°, 0 — вниз"),
+    FieldSpecification("view_azimuth_deg", "Азимут взгляда", "±180°, 0 — к +X"),
     FieldSpecification("sphere_x_mm", "Центр сферы xC", "±10000 мм"),
     FieldSpecification("sphere_y_mm", "Центр сферы yC", "±10000 мм"),
     FieldSpecification("sphere_z_mm", "Центр сферы zC", "100…10000 мм"),
@@ -92,6 +101,8 @@ LIGHT_FIELDS: tuple[FieldSpecification, ...] = (
     FieldSpecification("y_mm", "yL, мм"),
     FieldSpecification("z_mm", "zL, мм"),
     FieldSpecification("intensity_w_sr", "I0, Вт/ср"),
+    FieldSpecification("axis_tilt_deg", "наклон°"),
+    FieldSpecification("axis_azimuth_deg", "азимут°"),
 )
 
 
@@ -180,6 +191,23 @@ class NumberForm(ttk.LabelFrame):
             for specification in self._specifications
         }
 
+    def read_value(self, attribute: str) -> float | int:
+        """Считывает значение одного поля.
+
+        Raises:
+            ParameterValidationError: Если поле пусто или содержит не число.
+        """
+        specification = next(spec for spec in self._specifications if spec.attribute == attribute)
+        return parse_number(self._variables[attribute].get(), specification)
+
+    def set_value(self, attribute: str, value: float) -> None:
+        """Записывает значение в поле (до 6 значащих цифр)."""
+        self._variables[attribute].set(f"{value:g}")
+
+    def watch(self, attribute: str, callback: Callable[[], None]) -> None:
+        """Подписывает обработчик на изменение текста поля."""
+        self._variables[attribute].trace_add("write", lambda *_: callback())
+
 
 class LightRow:
     """Строка таблицы источников: флажок «вкл», четыре поля и кнопка удаления."""
@@ -212,7 +240,7 @@ class LightRow:
             variable = tk.StringVar(value=f"{getattr(light, specification.attribute):g}")
             variable.trace_add("write", lambda *_: on_change())
             self._variables[specification.attribute] = variable
-            self._widgets.append(ttk.Entry(master, textvariable=variable, width=7, justify="right"))
+            self._widgets.append(ttk.Entry(master, textvariable=variable, width=6, justify="right"))
         self._widgets.append(ttk.Button(master, text="✕", width=2, command=lambda: on_remove(self)))
 
     def place_at(self, row: int) -> None:
@@ -254,7 +282,9 @@ class LightsPanel(ttk.LabelFrame):
             master: Родительский контейнер.
             on_change: Вызывается при любом изменении списка источников.
         """
-        super().__init__(master, text="Источники света (I = I0·cos θ)", padding=6)
+        super().__init__(
+            master, text="Источники света (I = I0·cos θ, θ — угол от оси источника)", padding=6
+        )
         self._on_change = on_change
         self._rows: list[LightRow] = []
 
@@ -349,8 +379,8 @@ class ResultCanvas(ttk.Frame):
         self._image_axes.plot(maximum_y, maximum_x, "+", color="tab:red", markersize=12)
 
         self._image_axes.set_title("Яркость на сфере (0–255), + — максимум")
-        self._image_axes.set_xlabel("y, мм")
-        self._image_axes.set_ylabel("x, мм")
+        self._image_axes.set_xlabel("y на экране, мм")
+        self._image_axes.set_ylabel("x на экране, мм")
         self._colorbar = self._figure.colorbar(image, ax=self._image_axes, fraction=0.046, pad=0.04)
         self._colorbar.set_label("Градации серого")
 
@@ -374,15 +404,25 @@ class ApplicationWindow(tk.Tk):
         """Собирает интерфейс и выполняет расчёт с параметрами по умолчанию."""
         super().__init__()
         self.title("ЛР №2. Расчёт яркости на сфере от точечных источников света")
-        self.geometry("1440x880")
-        self.minsize(1150, 760)
+        self.geometry("1440x840")
+        self.minsize(1150, 720)
 
         self._result: ComputationResult | None = None
         self._pending_job: str | None = None
         self._loading = False
+        # Синхронизация квадратного пикселя: какое поле сейчас правится и
+        # значения остальных трёх полей на момент начала его правки.
+        self._pixel_edit_field: str | None = None
+        self._pixel_edit_base: dict[str, float | int] = {}
+        self._pixel_syncing = False
+        self._square_pixel_sync = tk.BooleanVar(value=True)
+        self._square_pixel_sync.trace_add("write", lambda *_: self._reset_pixel_edit())
         self._auto_recalculate = tk.BooleanVar(value=True)
         self._colormap = tk.StringVar(value=DISPLAY_COLORMAPS[0])
         self._status = tk.StringVar()
+
+        # Строка состояния закреплена снизу, чтобы не обрезаться на невысоких экранах.
+        ttk.Label(self, textvariable=self._status, anchor="w", padding=(8, 2)).pack(side="bottom", fill="x")
 
         content = ttk.Frame(self, padding=8)
         content.pack(fill="both", expand=True)
@@ -391,6 +431,8 @@ class ApplicationWindow(tk.Tk):
         controls.pack(side="left", fill="y")
         self._scene_form = NumberForm(controls, "Экран, наблюдатель, сфера", SCENE_FIELDS, self._schedule)
         self._scene_form.pack(fill="x")
+        for attribute in SQUARE_PIXEL_FIELDS:
+            self._scene_form.watch(attribute, lambda name=attribute: self._sync_square_pixel(name))
         self._material_form = NumberForm(
             controls, "Материал: f = kd + ks·(h·N)^ke", MATERIAL_FIELDS, self._schedule
         )
@@ -409,8 +451,6 @@ class ApplicationWindow(tk.Tk):
         self._report = tk.Text(results, height=8, wrap="none", font=("Consolas", 9), state="disabled")
         self._report.pack(fill="x")
 
-        ttk.Label(self, textvariable=self._status, anchor="w", padding=(8, 2)).pack(fill="x")
-
         self.bind("<Return>", lambda _: self.recalculate())
         self.reset_parameters()
 
@@ -420,6 +460,11 @@ class ApplicationWindow(tk.Tk):
         frame.pack(fill="x", pady=(8, 0))
 
         ttk.Checkbutton(frame, text="Автопересчёт", variable=self._auto_recalculate).pack(anchor="w")
+        ttk.Checkbutton(
+            frame,
+            text="Подгонять квадратный пиксель (H↔W, Hres↔Wres)",
+            variable=self._square_pixel_sync,
+        ).pack(anchor="w")
         palette = ttk.Frame(frame)
         palette.pack(fill="x", pady=4)
         ttk.Label(palette, text="Палитра просмотра:").pack(side="left")
@@ -502,7 +547,52 @@ class ApplicationWindow(tk.Tk):
         self._material_form.fill(defaults.material)
         self._lights_panel.fill(defaults.lights)
         self._loading = False
+        self._reset_pixel_edit()
         self.recalculate()
+
+    def _reset_pixel_edit(self) -> None:
+        """Забывает запомненные значения: следующая правка начнёт синхронизацию заново."""
+        self._pixel_edit_field = None
+
+    def _sync_square_pixel(self, edited: str) -> None:
+        """Пересчитывает парный параметр экрана, чтобы пиксель остался квадратным.
+
+        Пересчёт ведётся от значений остальных полей, запомненных в начале
+        правки поля edited. Поэтому при наборе числа по цифрам («3» → «30» →
+        «300») промежуточные округления не накапливаются.
+
+        Args:
+            edited: Имя изменённого поля из SQUARE_PIXEL_FIELDS.
+        """
+        if self._loading or self._pixel_syncing or not self._square_pixel_sync.get():
+            return
+
+        if self._pixel_edit_field != edited:
+            try:
+                self._pixel_edit_base = {
+                    name: self._scene_form.read_value(name)
+                    for name in SQUARE_PIXEL_FIELDS
+                    if name != edited
+                }
+            except ParameterValidationError:
+                return
+            self._pixel_edit_field = edited
+
+        try:
+            values = {**self._pixel_edit_base, edited: self._scene_form.read_value(edited)}
+        except ParameterValidationError:
+            return
+
+        self._pixel_syncing = True
+        try:
+            # Возврат полей, изменённых на предыдущем шаге набора, к исходным значениям.
+            for name, base_value in self._pixel_edit_base.items():
+                if self._scene_form.read_value(name) != base_value:
+                    self._scene_form.set_value(name, base_value)
+            for name, value in square_pixel_update(edited, values).items():
+                self._scene_form.set_value(name, value)
+        finally:
+            self._pixel_syncing = False
 
     def _schedule(self) -> None:
         """Откладывает автопересчёт до паузы во вводе."""

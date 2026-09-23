@@ -12,14 +12,22 @@
     * ось Y направлена вдоль ширины экрана W и отображается по горизонтали
       изображения (Wres пикселей);
     * ось Z направлена вверх, к наблюдателю O(0, 0, zO) и источникам света;
-    * наблюдатель смотрит на экран, поэтому видимая область — пирамида с
-      вершиной O и основанием-экраном; сфера должна целиком лежать внутри неё.
+    * направления (взгляд наблюдателя, оси диаграмм источников) задаются
+      наклоном от вертикали вниз и азимутом (см. модуль geometry); при
+      наклоне взгляда 0° экран лежит в плоскости z = 0, при повороте взгляда
+      экран поворачивается вместе с ним;
+    * видимая область — пирамида с вершиной O и основанием-экраном; сфера
+      должна целиком лежать внутри неё.
 """
 
 from __future__ import annotations
 
-import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+
+import numpy as np
+
+from .geometry import Camera, direction_from_angles
 
 # Относительный допуск при проверке квадратности пикселя (как в ЛР1):
 # пользователь вводит целые пиксели и миллиметры, точное равенство
@@ -79,20 +87,29 @@ class ParameterLimits:
     SPHERE_Z = ValueRange(100.0, 10000.0, "мм")
     REFLECTION_COEFFICIENT = ValueRange(0.0, 10.0, "")
     SHININESS = ValueRange(1.0, 10000.0, "")
+    # Наклон взгляда меньше 90°: наблюдатель смотрит хотя бы немного вниз,
+    # иначе экран уходит за горизонт и расстояние zO теряет смысл.
+    VIEW_TILT = ValueRange(0.0, 89.0, "°")
+    LIGHT_TILT = ValueRange(0.0, 180.0, "°")
+    AZIMUTH = ValueRange(-180.0, 180.0, "°")
 
 
 @dataclass(frozen=True)
 class LightSource:
     """Точечный источник света с ламбертовской диаграммой излучения.
 
-    Ось диаграммы направлена вертикально вниз (0, 0, -1), поэтому сила
-    излучения в направлении под углом theta к оси равна I0 * cos(theta).
+    Ось диаграммы — основное направление излучения (как у фонарика); сила
+    излучения под углом theta к оси равна I0 * cos(theta), назад (theta > 90°)
+    источник не светит. Ось задаётся наклоном от вертикали вниз и азимутом;
+    при наклоне 0° она направлена вертикально вниз (0, 0, -1).
 
     Attributes:
         x_mm: Координата xL источника, мм.
         y_mm: Координата yL источника, мм.
         z_mm: Координата zL источника, мм.
         intensity_w_sr: Сила излучения I0 вдоль оси диаграммы, Вт/ср.
+        axis_tilt_deg: Наклон оси от вертикали вниз, градусы.
+        axis_azimuth_deg: Азимут наклона оси (0° — к +X, 90° — к +Y), градусы.
         enabled: False — источник временно исключён из расчёта.
     """
 
@@ -100,12 +117,19 @@ class LightSource:
     y_mm: float
     z_mm: float
     intensity_w_sr: float
+    axis_tilt_deg: float = 0.0
+    axis_azimuth_deg: float = 0.0
     enabled: bool = True
 
     @property
     def position_mm(self) -> tuple[float, float, float]:
         """Координаты источника (xL, yL, zL), мм."""
         return self.x_mm, self.y_mm, self.z_mm
+
+    @property
+    def axis(self) -> np.ndarray:
+        """Единичный вектор оси диаграммы O_L."""
+        return direction_from_angles(self.axis_tilt_deg, self.axis_azimuth_deg)
 
 
 @dataclass(frozen=True)
@@ -134,7 +158,10 @@ class SceneParameters:
         width_mm: Ширина экрана W вдоль оси Y, мм.
         height_px: Разрешение изображения по высоте Hres, пикселей.
         width_px: Разрешение изображения по ширине Wres, пикселей.
-        observer_z_mm: Высота наблюдателя zO над экраном, мм.
+        observer_z_mm: Высота наблюдателя zO над плоскостью z = 0 и расстояние
+            от него до экрана, мм.
+        view_tilt_deg: Наклон взгляда от вертикали вниз, градусы.
+        view_azimuth_deg: Азимут наклона взгляда, градусы.
         sphere_x_mm: Координата xC центра сферы, мм.
         sphere_y_mm: Координата yC центра сферы, мм.
         sphere_z_mm: Координата zC центра сферы, мм.
@@ -148,6 +175,8 @@ class SceneParameters:
     height_px: int
     width_px: int
     observer_z_mm: float
+    view_tilt_deg: float
+    view_azimuth_deg: float
     sphere_x_mm: float
     sphere_y_mm: float
     sphere_z_mm: float
@@ -194,24 +223,34 @@ class SceneParameters:
     def default() -> "SceneParameters":
         """Возвращает корректный набор параметров, используемый при запуске.
 
-        Экран 1000 x 1000 мм при 600 x 600 пикс даёт квадратный пиксель.
-        Два источника по разные стороны от сферы создают два блика, а
-        ke = 80 делает пик зеркального отражения ярко выраженным.
+        Экран 1500 x 1500 мм при 600 x 600 пикс даёт квадратный пиксель 2.5 мм;
+        запас по краям кадра позволяет поворачивать взгляд примерно на ±8°.
+        Два источника по разные стороны от сферы создают два блика, их оси
+        направлены примерно на центр сферы, а ke = 80 делает пик зеркального
+        отражения ярко выраженным.
         """
         return SceneParameters(
-            height_mm=1000.0,
-            width_mm=1000.0,
+            height_mm=1500.0,
+            width_mm=1500.0,
             height_px=600,
             width_px=600,
             observer_z_mm=3000.0,
+            view_tilt_deg=0.0,
+            view_azimuth_deg=0.0,
             sphere_x_mm=0.0,
             sphere_y_mm=0.0,
             sphere_z_mm=400.0,
-            sphere_radius_mm=300.0,
+            sphere_radius_mm=250.0,
             material=BlinnPhongMaterial(diffuse=0.3, specular=0.7, shininess=80.0),
             lights=(
-                LightSource(x_mm=-900.0, y_mm=700.0, z_mm=2000.0, intensity_w_sr=1000.0),
-                LightSource(x_mm=800.0, y_mm=-900.0, z_mm=1200.0, intensity_w_sr=500.0),
+                LightSource(
+                    x_mm=-900.0, y_mm=700.0, z_mm=2000.0, intensity_w_sr=1000.0,
+                    axis_tilt_deg=35.0, axis_azimuth_deg=-38.0,
+                ),
+                LightSource(
+                    x_mm=800.0, y_mm=-900.0, z_mm=1200.0, intensity_w_sr=500.0,
+                    axis_tilt_deg=56.0, axis_azimuth_deg=132.0,
+                ),
             ),
         )
 
@@ -237,6 +276,8 @@ class ParameterValidator:
         check(parameters.height_px, limits.RESOLUTION, "Разрешение Hres")
         check(parameters.width_px, limits.RESOLUTION, "Разрешение Wres")
         check(parameters.observer_z_mm, limits.OBSERVER_Z, "Наблюдатель zO")
+        check(parameters.view_tilt_deg, limits.VIEW_TILT, "Наклон взгляда")
+        check(parameters.view_azimuth_deg, limits.AZIMUTH, "Азимут взгляда")
         check(parameters.sphere_x_mm, limits.SPHERE_XY, "Центр сферы xC")
         check(parameters.sphere_y_mm, limits.SPHERE_XY, "Центр сферы yC")
         check(parameters.sphere_z_mm, limits.SPHERE_Z, "Центр сферы zC")
@@ -287,6 +328,8 @@ class ParameterValidator:
             check(light.y_mm, ParameterLimits.LIGHT_XY, f"{prefix}: yL")
             check(light.z_mm, ParameterLimits.LIGHT_Z, f"{prefix}: zL")
             check(light.intensity_w_sr, ParameterLimits.RADIANT_INTENSITY, f"{prefix}: I0")
+            check(light.axis_tilt_deg, ParameterLimits.LIGHT_TILT, f"{prefix}: наклон оси")
+            check(light.axis_azimuth_deg, ParameterLimits.AZIMUTH, f"{prefix}: азимут оси")
 
     @staticmethod
     def _check_square_pixel(parameters: SceneParameters) -> None:
@@ -311,14 +354,12 @@ class ParameterValidator:
     def _check_sphere_visible(parameters: SceneParameters) -> None:
         """Проверяет, что сфера целиком лежит внутри пирамиды видимости.
 
-        Пирамида ограничена плоскостью экрана z = 0 и четырьмя гранями,
-        проходящими через наблюдателя O(0, 0, zO) и края экрана. Грань,
-        проходящая через край x = a (a = H/2), задаётся уравнением
-
-            x + a * z / zO - a = 0,  нормаль n = (1, 0, a / zO).
-
-        Центр C лежит внутри не ближе R к грани, если знаковое расстояние
-        (|xC| + a * zC / zO - a) / |n| <= -R. Для граней y = ±W/2 — аналогично.
+        Пирамида образована четырьмя гранями, проходящими через наблюдателя
+        и рёбра экрана (с учётом поворота взгляда). Сфера целиком внутри,
+        если центр C удалён от каждой грани внутрь не меньше чем на R:
+        n_i . (C - O) >= R, где n_i — внутренняя единичная нормаль грани.
+        Отсюда же следует, что сфера целиком находится перед наблюдателем.
+        Дополнительно сфера не должна опускаться ниже плоскости z = 0.
 
         Raises:
             ParameterValidationError: Если радиус неположителен или сфера
@@ -328,32 +369,66 @@ class ParameterValidator:
         if radius <= 0.0:
             raise ParameterValidationError("Радиус сферы R должен быть положительным.")
 
-        observer_z = parameters.observer_z_mm
-        center_z = parameters.sphere_z_mm
-
-        if center_z - radius < 0.0:
+        if parameters.sphere_z_mm - radius < 0.0:
             raise ParameterValidationError(
-                "Сфера пересекает плоскость экрана: требуется zC - R >= 0 "
-                f"({center_z - radius:g} мм)."
-            )
-        if center_z + radius >= observer_z:
-            raise ParameterValidationError(
-                "Наблюдатель должен находиться выше сферы: требуется "
-                f"zC + R < zO ({center_z + radius:g} >= {observer_z:g})."
+                "Сфера опускается ниже плоскости z = 0: требуется zC - R >= 0 "
+                f"({parameters.sphere_z_mm - radius:g} мм)."
             )
 
-        faces = (
-            ("x", abs(parameters.sphere_x_mm), parameters.height_mm / 2.0),
-            ("y", abs(parameters.sphere_y_mm), parameters.width_mm / 2.0),
-        )
-        for axis, center_offset, half_size in faces:
-            slope = half_size / observer_z
-            signed_distance = (center_offset + slope * center_z - half_size) / math.hypot(
-                1.0, slope
+        camera = Camera.from_parameters(parameters)
+        center_offset = np.asarray(parameters.sphere_center_mm) - camera.origin_mm
+        distances = camera.side_plane_normals(parameters.height_mm, parameters.width_mm) @ center_offset
+        closest = int(np.argmin(distances))
+        if distances[closest] < radius:
+            raise ParameterValidationError(
+                "Сфера не помещается в область видимости: расстояние от центра до "
+                f"ближайшей грани пирамиды видимости {distances[closest]:.1f} мм меньше "
+                f"радиуса R = {radius:g} мм. Измените положение сферы или направление взгляда."
             )
-            if signed_distance > -radius:
-                raise ParameterValidationError(
-                    f"Сфера выходит за пирамиду видимости по оси {axis.upper()}: "
-                    f"расстояние от центра до грани {-signed_distance:.1f} мм "
-                    f"меньше радиуса R = {radius:g} мм."
-                )
+
+
+SQUARE_PIXEL_FIELDS = ("height_mm", "width_mm", "height_px", "width_px")
+
+
+def square_pixel_update(edited: str, values: Mapping[str, float]) -> dict[str, float | int]:
+    """Подбирает парный параметр так, чтобы пиксель стал квадратным (H/Hres = W/Wres).
+
+    Правило «парный параметр той же природы»:
+        * изменена высота H  -> W = H * Wres / Hres;
+        * изменена ширина W  -> H = W * Hres / Wres;
+        * изменено Hres      -> Wres = round(Hres * W / H), и, если округление
+          нарушило квадратность, W уточняется: W = Wres * H / Hres;
+        * изменено Wres      -> симметрично: Hres, при необходимости H.
+
+    Args:
+        edited: Имя изменённого поля из SQUARE_PIXEL_FIELDS.
+        values: Значения всех четырёх полей (изменённое — новое).
+
+    Returns:
+        Новые значения пересчитанных полей; пустой словарь, если значения
+        непригодны для пересчёта (ноль или отрицательное число).
+    """
+    height, width = values["height_mm"], values["width_mm"]
+    height_px, width_px = values["height_px"], values["width_px"]
+    if min(height, width, height_px, width_px) <= 0:
+        return {}
+
+    if edited == "height_mm":
+        return {"width_mm": height * width_px / height_px}
+    if edited == "width_mm":
+        return {"height_mm": width * height_px / width_px}
+    if edited == "height_px":
+        new_width_px = max(1, round(height_px * width / height))
+        updates: dict[str, float | int] = {"width_px": new_width_px}
+        exact_width = new_width_px * height / height_px
+        if not np.isclose(exact_width, width, rtol=1e-9):
+            updates["width_mm"] = exact_width
+        return updates
+    if edited == "width_px":
+        new_height_px = max(1, round(width_px * height / width))
+        updates = {"height_px": new_height_px}
+        exact_height = new_height_px * width / width_px
+        if not np.isclose(exact_height, height, rtol=1e-9):
+            updates["height_mm"] = exact_height
+        return updates
+    raise ValueError(f"Неизвестное поле: {edited}")

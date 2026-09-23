@@ -3,7 +3,7 @@
 Рабочие формулы (обозначения соответствуют рисунку задания):
 
     s = P - P_L,                         R^2 = |s|^2,
-    cos(theta) = s . O_L / |s|,          O_L = (0, 0, -1) — ось диаграммы,
+    cos(theta) = s . O_L / |s|,          O_L — единичная ось диаграммы источника,
     I(s) = I0 * cos(theta),              ламбертовская диаграмма излучения,
     cos(sigma) = -s . N / |s|,           угол падения на поверхность,
     E(P) = I(s) * cos(sigma) / R^2,      освещённость от одного источника,
@@ -12,8 +12,9 @@
     f = kd + ks * (h . N)^ke,            функция отражения Блинн-Фонга,
     L(P, v) = 1/pi * sum_i E_i(P) * f_i  яркость, Вт/(м^2 * ср).
 
-Отрицательные cos(theta) и cos(sigma) заменяются нулём: источник не
-излучает в верхнюю полусферу, а точки сферы, отвёрнутые от источника,
+Лучи зрения строятся камерой наблюдателя (geometry.Camera) с учётом
+поворота взгляда. Отрицательные cos(theta) и cos(sigma) заменяются нулём:
+источник не излучает назад относительно своей оси, а точки сферы, отвёрнутые от источника,
 находятся в собственной тени. Расстояния переводятся из мм в метры, чтобы
 освещённость получалась в Вт/м^2.
 """
@@ -24,13 +25,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .geometry import SurfaceSample, intersect_sphere, pixel_centres_mm
+from .geometry import Camera, SurfaceSample, intersect_sphere, pixel_centres_mm
 from .models import LightSource, SceneParameters
 
 MILLIMETRES_PER_METRE = 1000.0
-
-# Ось ламбертовской диаграммы источников направлена вертикально вниз.
-LIGHT_AXIS = np.array([0.0, 0.0, -1.0])
 
 
 @dataclass(frozen=True)
@@ -76,9 +74,10 @@ class LuminanceCalculator:
             Поле яркости по растру Hres x Wres.
         """
         x_coordinates_mm, y_coordinates_mm = pixel_centres_mm(self._parameters)
-        surface = intersect_sphere(
-            self._parameters, x_coordinates_mm[:, np.newaxis], y_coordinates_mm[np.newaxis, :]
+        directions = Camera.from_parameters(self._parameters).ray_directions(
+            x_coordinates_mm[:, np.newaxis], y_coordinates_mm[np.newaxis, :]
         )
+        surface = intersect_sphere(self._parameters, directions)
 
         values = np.zeros(surface.hit_mask.shape)
         values[surface.hit_mask] = self.luminance(
@@ -135,7 +134,7 @@ class LuminanceCalculator:
         distance_squared = np.einsum("...i,...i->...", ray, ray)
         ray_direction = ray / np.sqrt(distance_squared)[..., np.newaxis]
 
-        cos_theta = np.clip(ray_direction @ LIGHT_AXIS, 0.0, None)
+        cos_theta = np.clip(ray_direction @ light.axis, 0.0, None)
         cos_sigma = np.clip(-np.einsum("...i,...i->...", ray_direction, normals), 0.0, None)
         illuminance = light.intensity_w_sr * cos_theta * cos_sigma / distance_squared
 
