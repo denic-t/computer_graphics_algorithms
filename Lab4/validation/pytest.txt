@@ -1,0 +1,41 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.8, pytest-9.1.1, pluggy-1.7.0 -- C:\Users\Gorgi0\AppData\Local\Programs\Python\Python314\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Gorgi0\Documents\ChatGPT\Учеба\output\Lab4
+configfile: pyproject.toml
+testpaths: tests
+collecting ... collected 30 items
+
+tests/test_lab3.py::test_source_tables_and_color_matrix PASSED           [  3%]
+tests/test_lab3.py::test_spectrum_presets_have_expected_shape_and_limits PASSED [  6%]
+tests/test_lab3.py::test_overhead_radiance_matches_lambertian_formula PASSED [ 10%]
+tests/test_lab3.py::test_white_sources_agree_and_colored_sources_differ PASSED [ 13%]
+tests/test_lab3.py::test_spectral_radiance_scales_with_source_power PASSED [ 16%]
+tests/test_lab3.py::test_invalid_spectrum_and_non_square_pixels_are_rejected PASSED [ 20%]
+tests/test_lab3.py::test_export_produces_four_images_and_values PASSED   [ 23%]
+tests/test_lab3.py::test_xyz_integration_of_flat_spectrum PASSED         [ 26%]
+tests/test_lab3.py::test_light_axis_angles_and_fixed_preview_exposure PASSED [ 30%]
+tests/test_lab3.py::test_sphere_can_be_partly_outside_the_frame PASSED   [ 33%]
+tests/test_lab3.py::test_out_of_frame_sphere_reports_no_visible_pixels PASSED [ 36%]
+tests/test_lab3.py::test_full_visibility_is_optional_and_depends_on_view_direction PASSED [ 40%]
+tests/test_lab3.py::test_direction_angles_cover_upward_view_and_periodic_azimuth PASSED [ 43%]
+tests/test_lab4.py::test_lecture_basis_preserves_arbitrary_valid_color[False] PASSED [ 46%]
+tests/test_lab4.py::test_lecture_basis_preserves_arbitrary_valid_color[True] PASSED [ 50%]
+tests/test_lab4.py::test_bounded_reflectance_reports_infeasible_color PASSED [ 53%]
+tests/test_lab4.py::test_source_power_is_not_hidden_by_reconstruction_or_monitor_normalization PASSED [ 56%]
+tests/test_lab4.py::test_absolute_radiance_matches_independent_lambert_formula PASSED [ 60%]
+tests/test_lab4.py::test_white_neutral_three_paths_agree PASSED          [ 63%]
+tests/test_lab4.py::test_split_view_edges_and_interior PASSED            [ 66%]
+tests/test_lab4.py::test_export_roundtrip_preserves_numeric_arrays_and_rgb_overrides PASSED [ 70%]
+tests/test_lab4.py::test_invalid_inputs PASSED                           [ 73%]
+tests/test_lab4.py::test_unlit_sphere_returns_black_instead_of_crashing PASSED [ 76%]
+tests/test_lab4.py::test_identical_and_disabled_lights_have_distinct_spectrum_keys PASSED [ 80%]
+tests/test_lab4.py::test_real_tk_events_autorecalculate_and_split_drag PASSED [ 83%]
+tests/test_ui.py::test_parse_number_accepts_decimal_comma_and_integer_resolution PASSED [ 86%]
+tests/test_ui.py::test_spectrum_editor_applies_source_and_validates_reflectance PASSED [ 90%]
+tests/test_ui.py::test_blue_presets_recalculate_both_sources_without_extra_apply PASSED [ 93%]
+tests/test_ui.py::test_light_angles_change_radiance_while_exposure_reference_stays_fixed PASSED [ 96%]
+tests/test_ui.py::test_full_visibility_toggle_and_aim_controls PASSED    [100%]
+
+- generated xml file: C:\Users\Gorgi0\Documents\ChatGPT\Учеба\output\Lab4\validation\pytest.xml -
+============================= 30 passed in 8.74s ==============================

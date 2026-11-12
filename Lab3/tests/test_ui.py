@@ -2,12 +2,14 @@
 
 import tkinter as tk
 from tkinter import ttk
+from threading import current_thread, main_thread
 
 import numpy as np
 import pytest
 
 from sphere_color.models import Spectrum, WAVELENGTHS_NM
-from sphere_color.presets import gaussian_band
+from sphere_color.presets import gaussian_band, white_d65
+from sphere_color.service import LuminanceService
 from sphere_color.ui import ApplicationWindow, SpectrumEditor, parse_number
 
 
@@ -131,5 +133,104 @@ def test_full_visibility_toggle_and_aim_controls() -> None:
         assert source._axis_azimuth_entry.instate(["!disabled"])
         source.grid_slaves(row=8, column=0)[0].invoke()
         assert "cosθ = 1.00" in source.direction_status.get()
+    finally:
+        app.destroy()
+
+
+def test_spectrum_comparison_updates_without_rendering_and_saves_png(monkeypatch, tmp_path) -> None:
+    try:
+        app = ApplicationWindow()
+    except tk.TclError:
+        pytest.skip("Графический дисплей Tk недоступен")
+    app.withdraw()
+    try:
+        app._auto.set(False)
+        panel = app._spectrum_comparison
+        tabs = app._tabs
+        assert tabs.tab(panel, "text") == "Сравнение спектров"
+        assert tuple(panel.source.cget("values")) == ("Источник 1", "Источник 2")
+
+        calls = []
+        original_compute = LuminanceService.compute
+        monkeypatch.setattr("sphere_color.ui.LuminanceService.compute", lambda parameters: calls.append(parameters))
+        tabs.select(panel)
+        panel.source.current(0)
+        panel.source.event_generate("<<ComboboxSelected>>")
+        assert panel._selected_light is app._light_forms[0]
+        panel.source.current(1)
+        panel.source.event_generate("<<ComboboxSelected>>")
+        assert panel._selected_light is app._light_forms[1]
+        assert not calls
+
+        selected_line, d65_line = panel.axes.lines
+        np.testing.assert_allclose(selected_line.get_ydata(),
+                                   app._light_forms[1].spectrum.as_array() / max(app._light_forms[1].spectrum.values))
+        np.testing.assert_allclose(d65_line.get_ydata(), white_d65().as_array())
+        assert selected_line.get_label() == "Выбранный источник"
+        assert d65_line.get_label() == "D65"
+        assert selected_line.get_xdata()[0] == 380
+        assert selected_line.get_xdata()[-1] == 780
+
+        source = app._light_forms[1]
+        source.enabled.set(False)
+        assert panel.source.current() == 1
+        source.grid_slaves(row=9, column=0)[0].invoke()
+        editor = next(child for child in source.winfo_children() if isinstance(child, SpectrumEditor))
+        rows = "\n".join(f"{nm}; {value}" for nm, value in zip(WAVELENGTHS_NM, gaussian_band(630, 45).values))
+        editor.editor.delete("1.0", "end")
+        editor.editor.insert("1.0", rows)
+        original_recalculate = app.recalculate
+        monkeypatch.setattr(app, "recalculate", lambda **kwargs: True)
+        editor._apply()
+        np.testing.assert_allclose(panel.axes.lines[0].get_ydata(),
+                                   source.spectrum.as_array() / max(source.spectrum.values))
+        assert np.argmax(panel.axes.lines[0].get_ydata()) == WAVELENGTHS_NM.index(630)
+
+        source.grid_slaves(row=9, column=0)[0].invoke()
+        editor = next(child for child in source.winfo_children() if isinstance(child, SpectrumEditor))
+        presets = next(child for child in editor.winfo_children() if isinstance(child, ttk.LabelFrame))
+        blue = next(child for child in presets.winfo_children() if child.cget("text") == "Синий")
+        blue.invoke()
+        assert np.argmax(panel.axes.lines[0].get_ydata()) == WAVELENGTHS_NM.index(460)
+        editor.destroy()
+
+        output = tmp_path / "spectra.png"
+        monkeypatch.setattr("sphere_color.ui.filedialog.asksaveasfilename", lambda **kwargs: str(output))
+        panel.save_graph()
+        assert output.read_bytes().startswith(b"\x89PNG")
+        tabs.select(0)
+        monkeypatch.setattr("sphere_color.ui.LuminanceService.compute", original_compute)
+        monkeypatch.setattr(app, "recalculate", original_recalculate)
+        assert app.recalculate()
+        assert app._result is not None
+        assert not calls
+    finally:
+        app.destroy()
+
+
+def test_auto_calculation_is_debounced_and_runs_off_tk_thread(monkeypatch) -> None:
+    try:
+        app = ApplicationWindow()
+    except tk.TclError:
+        pytest.skip("Графический дисплей Tk недоступен")
+    app.withdraw()
+    try:
+        calls = []
+        original_compute = LuminanceService.compute
+
+        def compute(parameters):
+            calls.append(current_thread())
+            return original_compute(parameters)
+
+        monkeypatch.setattr("sphere_color.ui.LuminanceService.compute", compute)
+        app._scene["sphere_x_mm"].set("10")
+        app._scene["sphere_x_mm"].set("20")
+        app.after(1800, app.quit)
+        app.mainloop()
+        assert len(calls) == 1
+        assert calls[0] is not main_thread()
+        assert app._job is None
+        assert app._render_future is None
+        assert app._result.parameters.sphere_x_mm == 20
     finally:
         app.destroy()

@@ -1,0 +1,32 @@
+{
+  "python": "3.14.8 (tags/v3.14.8:8e6e75d, Sep 30 2026, 18:19:33) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "numpy": "2.5.4",
+  "matplotlib": "3.11.2",
+  "pillow": "13.0.0",
+  "pytest": "9.1.1",
+  "tk": 9.0,
+  "800x800": {
+    "elapsed_seconds": 0.949,
+    "shape": [
+      800,
+      800,
+      3
+    ],
+    "finite_absolute_field": true,
+    "metrics": {
+      "A_vs_1": {
+        "display_mae": 0.0,
+        "display_rmse": 0.0,
+        "display_max": 0.0,
+        "absolute_xyz_rmse": 5.203428252540857e-15
+      },
+      "A_vs_2": {
+        "display_mae": 0.0,
+        "display_rmse": 0.0,
+        "display_max": 0.0,
+        "absolute_xyz_rmse": 9.646011008644668e-15
+      }
+    }
+  }
+}

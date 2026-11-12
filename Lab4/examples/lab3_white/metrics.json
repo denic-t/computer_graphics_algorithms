@@ -1,0 +1,14 @@
+{
+  "A_vs_1": {
+    "display_mae": 0.0,
+    "display_rmse": 0.0,
+    "display_max": 0.0,
+    "absolute_xyz_rmse": 1.5462974365549144e-09
+  },
+  "A_vs_2": {
+    "display_mae": 0.0,
+    "display_rmse": 0.0,
+    "display_max": 0.0,
+    "absolute_xyz_rmse": 1.5462872876100146e-09
+  }
+}

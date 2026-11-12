@@ -1,0 +1,90 @@
+{
+  "inputs": [
+    {
+      "name": "computer_graphics_algorithms-main.zip",
+      "sha256": "9723e778648df20cc4c834e97d4c00b501b3cc11bbf08f96d40649ecfe1d4b18"
+    },
+    {
+      "name": "АКГ_лр4.docx",
+      "sha256": "0107dc8338317d7dc4e3ad7405813777f5102ea89a7493103512290d961f9d7f"
+    },
+    {
+      "name": "mis_lect04_11.pdf",
+      "sha256": "a76564ade85824837c3a94a51daf23326c7eb7d555fac89258dc1dcaa101edcd"
+    }
+  ],
+  "inherited_files": [
+    {
+      "path": "data/cie_xyz_1931_10nm.csv",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "data/d65_10nm.csv",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "program.py",
+      "unchanged_from_lab3": false
+    },
+    {
+      "path": "pyproject.toml",
+      "unchanged_from_lab3": false
+    },
+    {
+      "path": "sphere_color/__init__.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/analysis.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/colorimetry.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/data/cie_xyz_1931_10nm.csv",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/data/d65_10nm.csv",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/geometry.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/models.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/physics.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/presets.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/rendering.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/service.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "sphere_color/ui.py",
+      "unchanged_from_lab3": false
+    },
+    {
+      "path": "tests/test_lab3.py",
+      "unchanged_from_lab3": true
+    },
+    {
+      "path": "tests/test_ui.py",
+      "unchanged_from_lab3": true
+    }
+  ]
+}

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from queue import SimpleQueue
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -267,6 +269,73 @@ class LightForm(ttk.LabelFrame):
         return LightSource(**numbers, spectrum=self.spectrum, enabled=self.enabled.get())
 
 
+class SpectrumComparisonPanel(ttk.Frame):
+    """Сравнение спектра выбранного источника с D65 без расчёта сцены."""
+
+    def __init__(self, master: tk.Misc) -> None:
+        super().__init__(master, padding=8)
+        self._lights: list[LightForm] = []
+        self._selected_light: LightForm | None = None
+        self._d65 = white_d65()
+
+        controls = ttk.Frame(self)
+        controls.pack(fill="x", pady=(0, 6))
+        ttk.Label(controls, text="Источник света:").pack(side="left", padx=(0, 8))
+        self.source = ttk.Combobox(controls, state="readonly", width=24)
+        self.source.pack(side="left")
+        self.source.bind("<<ComboboxSelected>>", self._source_selected)
+
+        self.figure = Figure(figsize=(8, 5), dpi=100)
+        self.axes = self.figure.add_subplot()
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        ttk.Button(self, text="Сохранить график спектров", command=self.save_graph).pack(
+            anchor="e", pady=(6, 0),
+        )
+        self.refresh()
+
+    def set_lights(self, lights: list[LightForm]) -> None:
+        self._lights = list(lights)
+        if self._selected_light not in self._lights:
+            self._selected_light = self._lights[0] if self._lights else None
+        self.source.configure(values=[str(light.cget("text")) for light in self._lights])
+        if self._selected_light is None:
+            self.source.set("")
+        else:
+            self.source.current(self._lights.index(self._selected_light))
+        self.refresh()
+
+    def _source_selected(self, _event: tk.Event) -> None:
+        index = self.source.current()
+        self._selected_light = self._lights[index] if 0 <= index < len(self._lights) else None
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.axes.clear()
+        if self._selected_light is not None:
+            selected = self._selected_light.spectrum.as_array()
+            reference = self._d65.as_array()
+            self.axes.plot(WAVELENGTHS_NM, selected / selected.max(), label="Выбранный источник")
+            self.axes.plot(WAVELENGTHS_NM, reference / reference.max(), label="D65")
+            self.axes.legend()
+        self.axes.set(
+            xlim=(380, 780), ylim=(0, 1.05),
+            xlabel="Длина волны, нм", ylabel="Относительная интенсивность",
+            title="Сравнение спектра источника с D65",
+        )
+        self.axes.grid(True, alpha=0.3)
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
+
+    def save_graph(self) -> None:
+        filename = filedialog.asksaveasfilename(
+            parent=self, title="Сохранить график спектров", initialdir=str(ROOT),
+            defaultextension=".png", filetypes=[("PNG", "*.png")],
+        )
+        if filename:
+            self.figure.savefig(filename, format="png")
+
+
 class ApplicationWindow(tk.Tk):
     """Окно с управлением сценой, спектрами, изображениями и значениями."""
 
@@ -277,6 +346,10 @@ class ApplicationWindow(tk.Tk):
         self.minsize(1120, 700)
         self._result: ComputationResult | None = None
         self._job: str | None = None
+        self._render_generation = 0
+        self._render_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lab3-render")
+        self._render_future: Future[ComputationResult] | None = None
+        self._render_results: SimpleQueue[tuple[int, ComputationResult | ValueError]] = SimpleQueue()
         self._loading = False
         self._syncing = False
         self._photos: list[ImageTk.PhotoImage] = []
@@ -339,11 +412,14 @@ class ApplicationWindow(tk.Tk):
         ttk.Button(left, text="Значения по умолчанию", command=self.reset).pack(fill="x", pady=2)
 
         tabs = ttk.Notebook(right)
+        self._tabs = tabs
         tabs.pack(fill="both", expand=True)
         images_tab = ttk.Frame(tabs)
         tabs.add(images_tab, text="Изображения")
         curves_tab = ttk.Frame(tabs)
         tabs.add(curves_tab, text="Сечения яркости")
+        self._spectrum_comparison = SpectrumComparisonPanel(tabs)
+        tabs.add(self._spectrum_comparison, text="Сравнение спектров")
         exposure_controls = ttk.Frame(images_tab)
         exposure_controls.grid(row=0, column=0, columnspan=2, sticky="ew")
         ttk.Checkbutton(
@@ -371,8 +447,22 @@ class ApplicationWindow(tk.Tk):
         report_frame.pack(fill="x", pady=5)
         self._report = tk.Text(report_frame, height=10, wrap="none", font=("Consolas", 9), state="disabled")
         self._report.pack(fill="x")
-        self.bind("<Return>", lambda _: self.recalculate())
+        self.bind("<Return>", self._on_return)
+        self.bind("<<SceneComputed>>", self._receive_auto_result)
         self.reset()
+
+    def _on_return(self, event: tk.Event) -> None:
+        widget = event.widget
+        while widget is not None:
+            if widget is self._tabs:
+                return
+            widget = widget.master
+        self.recalculate()
+
+    def destroy(self) -> None:
+        self._render_generation += 1
+        self._render_executor.shutdown(wait=False, cancel_futures=True)
+        super().destroy()
 
     @staticmethod
     def _scrolling_panel(split: ttk.PanedWindow) -> tuple[ttk.Frame, ttk.Frame]:
@@ -468,9 +558,53 @@ class ApplicationWindow(tk.Tk):
     def _schedule(self) -> None:
         if self._loading or not self._auto.get():
             return
+        self._render_generation += 1
         if self._job is not None:
             self.after_cancel(self._job)
-        self._job = self.after(650, lambda: self.recalculate(interactive=False))
+        if self._render_future is not None:
+            self._render_future.cancel()
+        self._job = self.after(650, self._start_auto_calculation)
+
+    def _start_auto_calculation(self) -> None:
+        self._job = None
+        if not self._auto.get():
+            return
+        try:
+            parameters = self.read_parameters()
+        except ValueError as error:
+            self._clear_result(error)
+            self._status.set(f"⚠ {error}")
+            return
+        generation = self._render_generation
+        future = self._render_executor.submit(LuminanceService.compute, parameters)
+        self._render_future = future
+
+        def completed(done: Future[ComputationResult]) -> None:
+            if done.cancelled():
+                return
+            try:
+                outcome: ComputationResult | ValueError = done.result()
+            except ValueError as error:
+                outcome = error
+            self._render_results.put((generation, outcome))
+            try:
+                self.event_generate("<<SceneComputed>>", when="tail")
+            except (RuntimeError, tk.TclError):
+                pass  # Окно могло быть закрыто во время расчёта.
+
+        future.add_done_callback(completed)
+
+    def _receive_auto_result(self, _event: tk.Event) -> None:
+        while not self._render_results.empty():
+            generation, outcome = self._render_results.get_nowait()
+            if generation != self._render_generation:
+                continue
+            self._render_future = None
+            if isinstance(outcome, ValueError):
+                self._clear_result(outcome)
+                self._status.set(f"⚠ {outcome}")
+            else:
+                self._show_result(outcome)
 
     def _edit_reflectance(self) -> None:
         SpectrumEditor(
@@ -483,6 +617,7 @@ class ApplicationWindow(tk.Tk):
         self._spectrum_changed()
 
     def _spectrum_changed(self) -> None:
+        self._spectrum_comparison.refresh()
         if self.recalculate(interactive=False):
             self._status.set("Спектр применён. Изображения пересчитаны.")
 
@@ -500,6 +635,7 @@ class ApplicationWindow(tk.Tk):
         )
         form.pack(fill="x", pady=3)
         self._light_forms.append(form)
+        self._spectrum_comparison.set_lights(self._light_forms)
         self._schedule()
 
     def _remove_light(self, form: LightForm) -> None:
@@ -510,6 +646,7 @@ class ApplicationWindow(tk.Tk):
         form.destroy()
         for number, item in enumerate(self._light_forms, 1):
             item.configure(text=f"Источник {number}")
+        self._spectrum_comparison.set_lights(self._light_forms)
         self._schedule()
 
     def read_parameters(self) -> SceneParameters:
@@ -577,9 +714,12 @@ class ApplicationWindow(tk.Tk):
         self._report.configure(state="disabled")
 
     def recalculate(self, *, interactive: bool = True) -> bool:
+        self._render_generation += 1
         if self._job is not None:
             self.after_cancel(self._job)
             self._job = None
+        if self._render_future is not None:
+            self._render_future.cancel()
         try:
             parameters = self.read_parameters()
             result = LuminanceService.compute(parameters)
@@ -588,6 +728,11 @@ class ApplicationWindow(tk.Tk):
             self._status.set(f"⚠ {error}")
             if interactive: messagebox.showerror("Ошибка параметров", str(error))
             return False
+        self._show_result(result)
+        return True
+
+    def _show_result(self, result: ComputationResult) -> None:
+        parameters = result.parameters
         self._result = result
         self._redraw_images()
         self._update_light_directions(parameters)
@@ -607,7 +752,6 @@ class ApplicationWindow(tk.Tk):
             f"Расчёт выполнен. Lср = {result.statistics.mean_w_m2_sr:.3e} Вт/(м²·ср); "
             f"отличие image_1/image_2 = {result.mean_difference:.2f} уровня."
         )
-        return True
 
     def save_current(self) -> None:
         if not self.recalculate() or self._result is None:
