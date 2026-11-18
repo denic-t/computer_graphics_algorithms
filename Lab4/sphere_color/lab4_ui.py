@@ -9,7 +9,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from .ui import ApplicationWindow as Lab3Window, SCENE_FIELDS
 from .models import SceneParameters
 from .lab4_service import Lab4Service, default_scene, display_images, split_image
-from .exporting import spectrum_figure, read_scene, spectrum_display_delta, spectrum_details
+from .exporting import spectrum_figure, read_scene, spectrum_display_delta, spectrum_details, brightness_rows
 
 METHOD_LABELS = {"bounded": "С ограничениями", "basis": "Базисный"}
 IMAGE_LABELS = {"image_1": "Исходный спектр", "image_2": "RGB-расчёт"}
@@ -101,6 +101,21 @@ class ApplicationWindow(Lab3Window):
         self._split_canvas.bind("<Button-1>", self._drag)
         self._split_canvas.bind("<B1-Motion>", self._drag)
         self._split_bounds = (0, 1)
+        results = ttk.Frame(self._tabs, padding=8)
+        self._tabs.add(results, text="Результаты")
+        self._results_info = tk.StringVar()
+        ttk.Label(results, textvariable=self._results_info, wraplength=1000).pack(fill="x", pady=(0, 6))
+        def table(title, columns, height):
+            frame = ttk.LabelFrame(results, text=title, padding=3); frame.pack(fill="both", expand=True, pady=3)
+            tree = ttk.Treeview(frame, columns=tuple(range(len(columns))), show="headings", height=height)
+            for index, name in enumerate(columns):
+                tree.heading(index, text=name); tree.column(index, width=95, minwidth=50, stretch=True)
+            tree.pack(fill="both", expand=True)
+            return tree
+        self._brightness_table = table("Яркость image_A", ("Точка", "x, мм", "y, мм", "z, мм", "L, Вт/(м²·ср)", "683·Y, кд/м²"), 5)
+        self._spectra_table = table("Восстановление спектров", ("Объект", "CIE RGB", "Отрицательных", "Больше 1", "min", "max",
+                                    "RMSE спектра", "Ошибка XYZ", "I0 исходная, Вт/ср", "I0 восст., Вт/ср"), 3)
+        self._metrics_table = table("Сравнение изображений", ("Пара", "Средняя разница", "RMSE", "Максимальная", "RMSE XYZ"), 2)
         self._lab4_ready = True
         self._refresh_lab4()
         self._square.set(True)
@@ -149,13 +164,43 @@ class ApplicationWindow(Lab3Window):
             self._clear_spectrum("Исправьте параметры сцены.")
             self._split_canvas.delete("all")
             self._comparison_info.set("Нет результата")
+            self._draw_results()
             return
         keys = tuple(self._result.spectra)
         self._entity.configure(values=tuple(entity_label(key) for key in keys))
         if self._selected.get() not in keys:
             self._selected.set(keys[0])
         self._entity_label.set(entity_label(self._selected.get()))
-        self._draw_spectrum(); self._draw_split()
+        self._draw_spectrum(); self._draw_split(); self._draw_results()
+
+    def _draw_results(self):
+        for tree in (self._brightness_table, self._spectra_table, self._metrics_table):
+            tree.delete(*tree.get_children())
+        if self._result is None:
+            self._results_info.set(""); return
+        for title, *numbers in brightness_rows(self._result):
+            self._brightness_table.insert("", "end", values=(title, *(f"{v:.6g}" for v in numbers)))
+        warnings = []
+        for key, data in self._result.spectra.items():
+            rec = data["reconstruction"]; details = spectrum_details(key, data)
+            if "intensity_w_sr" in data:
+                power = (f"{data['intensity_w_sr']:.6g}", f"{data['intensity_w_sr']*np.trapezoid(rec.values, dx=10):.6g}")
+            else:
+                power = ("—", "—")
+            self._spectra_table.insert("", "end", values=(
+                entity_label(key), ", ".join(f"{v:.6g}" for v in rec.target_rgb), rec.negative_samples,
+                details["above_one_samples"], f"{details['min']:.6g}", f"{details['max']:.6g}",
+                f"{data['rmse']:.3g}", f"{rec.xyz_relative_error:.3g}", *power))
+            if rec.negative_samples:
+                warnings.append(f"{entity_label(key)}: {rec.negative_samples} отрицательных отсчётов")
+            if details["above_one_samples"]:
+                warnings.append(f"{entity_label(key)}: {details['above_one_samples']} отсчётов больше 1")
+        for name, label in (("A_vs_1", "A и 1"), ("A_vs_2", "A и 2")):
+            m = self._result.metrics[name]
+            self._metrics_table.insert("", "end", values=(label, f"{m['display_mae']:.4g}", f"{m['display_rmse']:.4g}",
+                                                          f"{m['display_max']:.4g}", f"{m['absolute_xyz_rmse']:.3g}"))
+        text = f"Метод: {METHOD_LABELS[self._result.method]}"
+        self._results_info.set(text + (". Внимание: " + "; ".join(warnings) + "." if warnings else ""))
 
     def _draw_spectrum(self):
         if self._result is None: return

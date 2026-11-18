@@ -102,6 +102,15 @@ def spectrum_figure(key, data, details=None):
     return figure
 
 
+def brightness_rows(result):
+    field = result.field
+    rows = []
+    for point in (*result.statistics.probes, result.statistics.minimum, result.statistics.maximum):
+        ij = np.unravel_index(np.nanargmin(np.sum((field.surface.points_mm-np.asarray(point.point_mm))**2, axis=-1)), field.sphere_mask.shape)
+        rows.append((point.title, *point.point_mm, point.luminance_w_m2_sr, 683*field.xyz_spectral[ij][1]))
+    return rows
+
+
 def export_result(result, directory, fraction=.5):
     from .lab4_service import split_image
     directory.mkdir(parents=True, exist_ok=True)
@@ -127,10 +136,7 @@ def export_result(result, directory, fraction=.5):
     with record("brightness.csv").open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(("point", "x_mm", "y_mm", "z_mm", "radiance_W_m2_sr", "luminance_cd_m2"))
-        field = result.field
-        for point in (*result.statistics.probes, result.statistics.minimum, result.statistics.maximum):
-            ij = np.unravel_index(np.nanargmin(np.sum((field.surface.points_mm-np.asarray(point.point_mm))**2, axis=-1)), field.sphere_mask.shape)
-            writer.writerow((point.title, *point.point_mm, point.luminance_w_m2_sr, 683*field.xyz_spectral[ij][1]))
+        writer.writerows(brightness_rows(result))
     record("values.txt").write_text(result.report+"\n", encoding="utf-8")
     record("metrics.json").write_text(json.dumps(result.metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     record("scene.json").write_text(json.dumps({"scene": asdict(result.parameters), "method": result.method,
