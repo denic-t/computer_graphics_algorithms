@@ -9,7 +9,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from .ui import ApplicationWindow as Lab3Window, SCENE_FIELDS
 from .models import SceneParameters
 from .lab4_service import Lab4Service, default_scene, display_images, split_image
-from .exporting import spectrum_figure, read_scene, spectrum_display_delta
+from .exporting import spectrum_figure, read_scene, spectrum_display_delta, spectrum_details
 
 METHOD_LABELS = {"bounded": "С ограничениями", "basis": "Базисный"}
 IMAGE_LABELS = {"image_1": "Исходный спектр", "image_2": "RGB-расчёт"}
@@ -23,6 +23,7 @@ class ApplicationWindow(Lab3Window):
     def __init__(self):
         self._method_name = "bounded"
         self._rgb_overrides = {}
+        self._details = None
         self._lab4_ready = False
         super().__init__()
         self.title("ЛР №4")
@@ -70,6 +71,8 @@ class ApplicationWindow(Lab3Window):
         ttk.Button(spectra_tab, text="Сбросить цвет", command=self._reset_rgb).pack(anchor="w")
         self._spectrum_info = tk.StringVar()
         ttk.Label(spectra_tab, textvariable=self._spectrum_info, wraplength=900).pack(fill="x", pady=4)
+        self._calculation_info = tk.StringVar()
+        ttk.Label(spectra_tab, textvariable=self._calculation_info, wraplength=1100, font=("Consolas", 9)).pack(fill="x", pady=(0, 4))
         panes = ttk.PanedWindow(spectra_tab, orient="horizontal"); panes.pack(fill="both", expand=True)
         table_frame = ttk.Frame(panes); panes.add(table_frame, weight=1)
         self._table = ttk.Treeview(table_frame, columns=("nm", "original", "restored", "delta"), show="headings", height=15)
@@ -143,11 +146,8 @@ class ApplicationWindow(Lab3Window):
 
     def _refresh_lab4(self):
         if self._result is None:
-            self._table.delete(*self._table.get_children())
+            self._clear_spectrum("Исправьте параметры сцены.")
             self._split_canvas.delete("all")
-            if self._spectrum_plot:
-                self._spectrum_plot.get_tk_widget().destroy(); self._spectrum_plot.figure.clear(); self._spectrum_plot=None
-            self._spectrum_info.set("Исправьте параметры сцены.")
             self._comparison_info.set("Нет результата")
             return
         keys = tuple(self._result.spectra)
@@ -165,13 +165,28 @@ class ApplicationWindow(Lab3Window):
         spectral_error = "≈ 0" if data['rmse'] <= tolerance else f"{data['rmse']:.3g}"
         color_error = "≈ 0" if rec.xyz_relative_error <= 1e-12 else f"{rec.xyz_relative_error:.3g}"
         self._spectrum_info.set(f"Ошибка спектра: {spectral_error} · Ошибка цвета: {color_error}")
+        self._details = d = spectrum_details(key, data)
+        xyz = lambda v: "(" + ", ".join(f"{x:.6g}" for x in v) + ")"
+        above = f" · больше 1: {d['above_one_samples']}" if key == "surface" else ""
+        self._calculation_info.set(
+            f"XYZ цель = M·RGB: {xyz(d['target_xyz'])} · XYZ достигнутый: {xyz(d['actual_xyz'])} · "
+            f"отн. ошибка: {d['xyz_relative_error']:.6g}\n"
+            f"Отрицательных отсчётов: {d['negative_samples']}{above} · min: {d['min']:.6g} · max: {d['max']:.6g}")
         self._table.delete(*self._table.get_children())
         for nm,a,b,difference in zip(range(380,781,10), data["original"], rec.values, spectrum_display_delta(data)):
             self._table.insert("", "end", values=(nm, f"{a:.3g}",f"{b:.3g}",f"{difference:.3g}"))
         if self._spectrum_plot:
             self._spectrum_plot.get_tk_widget().destroy(); self._spectrum_plot.figure.clear()
-        self._spectrum_plot = FigureCanvasTkAgg(spectrum_figure(key,data), master=self._spectrum_frame)
+        self._spectrum_plot = FigureCanvasTkAgg(spectrum_figure(key,data,d), master=self._spectrum_frame)
         self._spectrum_plot.get_tk_widget().pack(fill="both", expand=True); self._spectrum_plot.draw_idle()
+
+    def _clear_spectrum(self, message):
+        self._table.delete(*self._table.get_children())
+        if self._spectrum_plot:
+            self._spectrum_plot.get_tk_widget().destroy(); self._spectrum_plot.figure.clear(); self._spectrum_plot=None
+        self._details = None
+        self._calculation_info.set("")
+        self._spectrum_info.set(message)
 
     def _draw_split(self):
         if not self._lab4_ready or self._result is None: return
@@ -203,7 +218,8 @@ class ApplicationWindow(Lab3Window):
             from .reconstruction import reconstruct
             reconstruct(rgb, reflectance=self._selected.get()=="surface", method=self._method.get())
         except ValueError as error:
-            messagebox.showerror("RGB",str(error)); return
+            message = str(error) if str(error).startswith("RGB") or "XYZ" in str(error) else "RGB: нужны три числа CIE RGB."
+            self._clear_spectrum(f"Неверный RGB. {message}"); return
         self._rgb_overrides[self._selected.get()]=rgb
         self.recalculate(interactive=False)
 
